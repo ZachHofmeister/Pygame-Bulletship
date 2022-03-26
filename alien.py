@@ -1,9 +1,21 @@
+import random
+
 import pygame as pg
 from vector import Vector
 from pygame.sprite import Sprite, Group
+from timer import Timer
+from laser import Laser
+from copy import copy
+from random import randint
 
 
 class AlienFleet:
+    explode_images = [pg.transform.scale(pg.image.load(f'images/rainbow_explode{n}.png'), (48, 48)) for n in range(8)]
+    alien1_images = [pg.transform.scale(pg.image.load(f'images/tie/tie_{n}.png'), (48, 48)) for n in range(4)]
+    alien2_images = [pg.transform.scale(pg.image.load(f'images/tie_red/tie_red_{n}.png'), (48, 48)) for n in range(4)]
+    alien3_images = [pg.transform.scale(pg.image.load(f'images/tie_interceptor/tie_interceptor_{n}.png'), (48, 48)) for n in range(4)]
+    alien4_images = [pg.transform.scale(pg.image.load(f'images/tie_advance/tie_advance_{n}.png'), (48, 48)) for n in range(4)]
+
     def __init__(self, game, v=Vector(1, 0)):
         self.game = game
         self.ship = self.game.ship
@@ -11,7 +23,7 @@ class AlienFleet:
         self.screen = self.game.screen
         self.screen_rect = self.screen.get_rect()
         self.v = v
-        alien = Alien(self.game)
+        alien = Alien(self.game, image_list=AlienFleet.alien1_images)
         self.alien_h, self.alien_w = alien.rect.height, alien.rect.width
         self.fleet = Group()
         self.create_fleet()
@@ -24,14 +36,21 @@ class AlienFleet:
             for col in range(n_cols):
                 self.create_alien(row=row, col=col)
 
-    def set_ship(self, ship): self.ship = ship
+    def set_ship(self, ship):
+        self.ship = ship
+
     def create_alien(self, row, col):
         x = self.alien_w * (2 * col + 1)
         y = self.alien_h * (2 * row + 1)
-        alien = Alien(game=self.game, ul=(x, y), v=self.v)
+        images = AlienFleet.alien1_images
+        # alien = Alien(game=self.game, ul=(x, y), v=self.v, image_list=images,
+        #               start_index=randint(0, len(images) - 1))
+        alien = Alien(game=self.game, ul=(x, y), v=self.v, image_list=images)
         self.fleet.add(alien)
 
-    def empty(self): self.fleet.empty()
+    def empty(self):
+        self.fleet.empty()
+
     def get_number_cols(self, alien_width):
         spacex = self.settings.screen_width - 2 * alien_width
         return int(spacex / (2 * alien_width))
@@ -40,32 +59,32 @@ class AlienFleet:
         spacey = self.settings.screen_height - 3 * alien_height - ship_height
         return int(spacey / (2 * alien_height))
 
-    def length(self): return len(self.fleet.sprites())
+    def length(self):
+        return len(self.fleet.sprites())
 
-    def change_v(self, v):    # TODO
+    def change_v(self, v):
         for alien in self.fleet.sprites():
             alien.change_v(v)
 
-    def check_bottom(self): # TODO
-        for alien in self.fleet:
+    def check_bottom(self):
+        for alien in self.fleet.sprites():
             if alien.check_bottom():
-                return True
-        return False
+                self.ship.hit()
+                break
 
-    def check_edges(self):    # Return true if touching edge
-        for alien in self.fleet:
-            if alien.check_edges():
-                return True
+    def check_edges(self):
+        for alien in self.fleet.sprites():
+            if alien.check_edges(): return True
         return False
 
     def update(self):
-        delta_s = Vector(0, 0)    # don't change y position in general
+        delta_s = Vector(0, 0)  # don't change y position in general
         if self.check_edges():
             self.v.x *= -1
             self.change_v(self.v)
             delta_s = Vector(0, self.settings.fleet_drop_speed)
         if pg.sprite.spritecollideany(self.ship, self.fleet) or self.check_bottom():
-            self.ship.hit()
+            if not self.ship.is_dying(): self.ship.hit()
         for alien in self.fleet.sprites():
             alien.update(delta_s=delta_s)
 
@@ -75,27 +94,64 @@ class AlienFleet:
 
 
 class Alien(Sprite):
-    def __init__(self, game, ul=(0, 100), v=Vector(1, 0)):
+    def __init__(self, game, image_list, start_index=0, ul=(0, 100), v=Vector(1, 0),
+                 points=1211):
         super().__init__()
         self.game = game
         self.screen = game.screen
         self.settings = game.settings
-        self.image = pg.image.load('images/alien.bmp')
-        self.screen_rect = self.screen.get_rect()
+        self.points = points
+        self.stats = game.stats
+
+        self.exploding_timer = Timer(image_list=AlienFleet.explode_images, delay=200,
+                                     start_index=start_index, is_loop=False)
+        self.normal_timer = Timer(image_list=image_list, delay=250, is_loop=True)
+        self.timer = self.normal_timer
+        self.dying = False
+
+        self.image = self.timer.image()
+
         self.rect = self.image.get_rect()
+        self.screen_rect = self.screen.get_rect()
         self.rect.left, self.rect.top = ul
-        self.ul = Vector(ul[0], ul[1])   # position
-        self.v = v                       # velocity
+        self.ul = Vector(ul[0], ul[1])  # position
+        self.v = v  # velocity
+        self.image_list = image_list
+        self.center = Vector(self.rect.centerx, self.rect.centery)
+
+        self.chance_fire = 0.0001
 
     def change_v(self, v): self.v = v
+
     def check_bottom(self): return self.rect.bottom >= self.screen_rect.bottom
+
     def check_edges(self):
         r = self.rect
         return r.right >= self.screen_rect.right or r.left <= 0
 
+    def hit(self):
+        self.stats.alien_hit(alien=self)
+        self.timer = self.exploding_timer
+        self.dying = True
+
     def update(self, delta_s=Vector(0, 0)):
+        if self.dying and self.timer.is_expired():
+            self.kill()
         self.ul += delta_s
         self.ul += self.v * self.settings.alien_speed_factor
         self.rect.x, self.rect.y = self.ul.x, self.ul.y
 
-    def draw(self):  self.screen.blit(self.image, self.rect)
+        if random.random() <= self.chance_fire:
+            print("Firing!")
+            self.fire()
+
+    def draw(self):
+        image = self.timer.image()
+        rect = image.get_rect()
+        rect.x, rect.y = self.rect.x, self.rect.y
+        self.screen.blit(image, rect)
+        # self.screen.blit(self.image, self.rect)
+
+    def fire(self):
+        laser = Laser(self.game, copy(self.center), direct=Vector(0, 1), color=self.settings.alien_laser_color)
+        self.game.alien_lasers.add(laser)
